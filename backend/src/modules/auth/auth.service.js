@@ -41,7 +41,7 @@ export const authenticateUser = async ({ email, password }) => {
     throw error;
   }
 
-  const token = signToken({ userId: user._id.toString() });
+  const token = signToken({ userId: user._id.toString(), username: user.username });
 
   return { token };
 };

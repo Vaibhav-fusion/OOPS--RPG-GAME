@@ -3,14 +3,37 @@ import express from "express";
 import mongoose from "mongoose";
 import authRoutes from "./src/modules/auth/auth.routes.js";
 import gameRoutes from "./src/routes/game.routes.js";
+import leaderboardRoutes from "./src/leaderboard/leaderboard.routes.js";
+import profileRoutes from "./src/routes/profile.routes.js";
+import { authLimiter } from "./src/config/rateLimiter.js";
+import logger from "./src/config/logger.js";
 import { errorHandler } from "./src/middleware/error.middleware.js";
 
 const app = express();
-
 app.use(express.json());
 
-app.use("/api/auth", authRoutes);
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "http://localhost:5175");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization",
+  );
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+app.use((req, res, next) => {
+  logger.info("%s %s", req.method, req.originalUrl);
+  next();
+});
+
+app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/game", gameRoutes);
+app.use("/api/leaderboard", leaderboardRoutes);
+app.use("/api/profile", profileRoutes);
 
 app.get("/api/health", (req, res) => {
   res
@@ -28,6 +51,8 @@ const PORT = process.env.PORT || 4000;
 const MONGO_URI =
   process.env.MONGO_URI || "mongodb://127.0.0.1:27017/game-jus-auth";
 
+let server;
+
 const startServer = async () => {
   try {
     await mongoose.connect(MONGO_URI, {
@@ -35,15 +60,29 @@ const startServer = async () => {
       useUnifiedTopology: true,
     });
 
-    console.log("Connected to MongoDB");
+    logger.info("Connected to MongoDB");
 
-    app.listen(PORT, () => {
-      console.log(`Server listening on port ${PORT}`);
+    server = app.listen(PORT, () => {
+      logger.info(`Server listening on port ${PORT}`);
     });
   } catch (error) {
-    console.error("Failed to start server:", error);
+    logger.error("Failed to start server: %s", error.message);
     process.exit(1);
   }
 };
+
+const shutdown = async () => {
+  logger.info("Shutting down server gracefully...");
+  if (server) {
+    server.close(() => {
+      logger.info("HTTP server closed.");
+    });
+  }
+  await mongoose.disconnect();
+  process.exit(0);
+};
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 startServer();

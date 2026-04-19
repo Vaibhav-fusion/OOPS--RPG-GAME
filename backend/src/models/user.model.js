@@ -21,6 +21,29 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    displayName: {
+      type: String,
+      trim: true,
+      maxlength: 50,
+      default: function () {
+        return this.username;
+      },
+    },
+    avatarColor: {
+      type: String,
+      default: "#3B82F6",
+      validate: {
+        validator: function (v) {
+          return /^#[0-9A-F]{6}$/i.test(v);
+        },
+        message: "Avatar color must be a valid hex color code",
+      },
+    },
+    avatarUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
   },
   {
     timestamps: true,

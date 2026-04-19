@@ -1,378 +1,302 @@
-// Game Engine for Dungeonsweeper
-// Advanced algorithmic implementation for board generation, danger calculation, and reveal logic
+const GRID_SIZE = 11;
+const DIRECTIONS = [
+  [-1, 0],
+  [1, 0],
+  [0, -1],
+  [0, 1],
+  [-1, -1],
+  [-1, 1],
+  [1, -1],
+  [1, 1],
+];
 
-const TILE_TYPES = {
-  EMPTY: "empty",
-  ENEMY: "enemy",
-  TRAP: "trap",
-  TREASURE: "treasure",
+const ENEMIES = {
+  bat: 1,
+  rat: 1,
+  wolf: 2,
+  skeleton: 3,
+  goblin: 4,
+  slime: 5,
+  orge: 6,
+  bombslime: 8,
+  "rat master": 5,
+  "free elf": -1,
 };
 
-const ENEMY_TYPES = {
-  RAT: { name: "rat", value: 1 },
-  BAT: { name: "bat", value: 2 },
-  SKELETON: { name: "skeleton", value: 3 },
-  PLANT: { name: "plant", value: 4 },
-  SLIME: { name: "slime", value: 5 },
-  BOSS: { name: "boss", value: 10 },
-};
+const DRAGON_DAMAGE = { easy: 5, medium: 6, hard: 8 };
 
-const TRAP_TYPES = {
-  BOMB: { name: "bomb", value: 100 },
-};
+const tile = (name, type, value = 0, extra = {}, revealed = false) => ({
+  name,
+  type,
+  value,
+  danger: 0,
+  revealed,
+  extra,
+});
 
-const TREASURE_TYPES = {
-  GOLD: { name: "gold", value: 10 },
-  GEM: { name: "gem", value: 25 },
-  ARTIFACT: { name: "artifact", value: 50 },
-};
+const randomFrom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
-/**
- * Generates a game board with tiles based on difficulty and player level
- * @param {number} gridSize - Size of the grid (e.g., 10 for 10x10)
- * @param {string} difficulty - "easy", "medium", "hard"
- * @param {number} playerLevel - Player's current level for scaling
- * @param {number} seed - Optional seed for deterministic generation
- * @returns {Array} 2D array of tile objects
- */
-export const generateBoard = (
-  gridSize,
-  difficulty = "medium",
-  playerLevel = 1,
-  seed = null,
-) => {
-  // Initialize random number generator with seed if provided
-  const rng = seed ? seededRandom(seed) : Math.random;
+const inBounds = (board, x, y) =>
+  x >= 0 && x < board.length && y >= 0 && y < board.length;
 
-  const board = [];
-  for (let i = 0; i < gridSize; i++) {
-    board[i] = [];
-    for (let j = 0; j < gridSize; j++) {
-      board[i][j] = {
-        type: TILE_TYPES.EMPTY,
-        value: 0,
-        danger: 0,
-        revealed: false,
-        enemyType: null,
-        trapType: null,
-        treasureType: null,
-      };
+const chooseHiddenCells = (board, count, avoidSet = new Set()) => {
+  const cells = [];
+  for (let i = 0; i < board.length; i += 1) {
+    for (let j = 0; j < board[i].length; j += 1) {
+      if (!avoidSet.has(`${i},${j}`)) cells.push([i, j]);
     }
   }
+  for (let i = cells.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+  }
+  return cells.slice(0, count);
+};
 
-  // Ensure starting tile (0,0) is always safe
-  board[0][0].type = TILE_TYPES.EMPTY;
+const enemyCatalog = ["bat", "rat", "wolf", "skeleton", "goblin", "slime", "orge"];
 
-  // Calculate distribution based on difficulty
-  const distribution = getDifficultyDistribution(difficulty, playerLevel);
+const spawnTiles = (board, specs, avoidSet) => {
+  const cells = chooseHiddenCells(
+    board,
+    specs.reduce((sum, spec) => sum + spec.count, 0),
+    avoidSet,
+  );
+  let cursor = 0;
+  specs.forEach((spec) => {
+    for (let i = 0; i < spec.count; i += 1) {
+      const [x, y] = cells[cursor];
+      cursor += 1;
+      board[x][y] = spec.create();
+    }
+  });
+};
 
-  // Place enemies
-  placeEnemies(board, distribution.enemyCount, gridSize, playerLevel, rng);
+const enemyTile = (name) => tile(name, "enemy", ENEMIES[name]);
 
-  // Place traps
-  placeTraps(board, distribution.trapCount, gridSize, playerLevel, rng);
+const recalcDanger = (board) => {
+  for (let i = 0; i < board.length; i += 1) {
+    for (let j = 0; j < board[i].length; j += 1) {
+      const current = board[i][j];
+      if (current.type !== "empty" && current.type !== "boss" && current.type !== "orb") {
+        continue;
+      }
+      let danger = 0;
+      DIRECTIONS.forEach(([dx, dy]) => {
+        const nx = i + dx;
+        const ny = j + dy;
+        if (!inBounds(board, nx, ny)) return;
+        const neighbor = board[nx][ny];
+        if (neighbor.type === "enemy" || neighbor.type === "trap" || neighbor.type === "boss") {
+          danger += Math.max(0, neighbor.value > 0 ? 1 : 0);
+        }
+      });
+      current.danger = danger;
+    }
+  }
+};
 
-  // Place treasures
-  placeTreasures(board, distribution.treasureCount, gridSize, rng);
+const applyDamage = (gameSession, amount) => {
+  gameSession.playerStats.hp -= amount;
+  if (gameSession.playerStats.hp < 0) gameSession.playerStats.hp = 0;
+};
 
-  // Calculate danger values for all tiles
-  calculateDanger(board, gridSize);
+const addXp = (gameSession, amount) => {
+  gameSession.playerStats.xp += amount;
+};
 
+const clearToEmpty = (board, row, col, revealed = true) => {
+  board[row][col] = tile("empty", "empty", 0, {}, revealed);
+};
+
+const revealBombslimeBlast = (board, row, col) => {
+  const revealedCells = [];
+  DIRECTIONS.forEach(([dx, dy]) => {
+    const nx = row + dx;
+    const ny = col + dy;
+    if (!inBounds(board, nx, ny)) return;
+    board[nx][ny].revealed = true;
+    clearToEmpty(board, nx, ny, true);
+    revealedCells.push([nx, ny]);
+  });
+  return revealedCells;
+};
+
+const revealNearby = (board, row, col, maxTiles) => {
+  const nearby = [];
+  for (let i = row - 3; i <= row + 3; i += 1) {
+    for (let j = col - 3; j <= col + 3; j += 1) {
+      if (!inBounds(board, i, j)) continue;
+      if (!board[i][j].revealed && !(i === row && j === col)) {
+        nearby.push([i, j]);
+      }
+    }
+  }
+  for (let i = nearby.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [nearby[i], nearby[j]] = [nearby[j], nearby[i]];
+  }
+  return nearby.slice(0, maxTiles);
+};
+
+export const generateBoard = async (_rawSize, difficulty = "medium") => {
+  const board = Array.from({ length: GRID_SIZE }, () =>
+    Array.from({ length: GRID_SIZE }, () => tile("empty", "empty")),
+  );
+
+  const center = Math.floor(GRID_SIZE / 2);
+  board[center][center] = tile(
+    "centre dragon",
+    "boss",
+    DRAGON_DAMAGE[difficulty] || DRAGON_DAMAGE.medium,
+    {},
+    true,
+  );
+  board[0][0] = tile("blue orb", "orb", 0, { used: false }, true);
+
+  const avoid = new Set([`${center},${center}`, "0,0"]);
+  spawnTiles(
+    board,
+    [
+      { count: 20, create: () => enemyTile(randomFrom(enemyCatalog)) },
+      { count: 3, create: () => enemyTile("bombslime") },
+      { count: 2, create: () => enemyTile("rat master") },
+      { count: 4, create: () => enemyTile("free elf") },
+      { count: 4, create: () => tile("bomb", "trap", 100) },
+      { count: 6, create: () => tile("trapchest", "trap", 1) },
+      { count: 10, create: () => tile("chest", "support", 0) },
+      { count: 8, create: () => tile("question", "mystery", 0) },
+    ],
+    avoid,
+  );
+
+  recalcDanger(board);
   return board;
 };
 
-/**
- * Calculates danger values for all tiles based on adjacent enemies/traps
- * @param {Array} board - 2D array of tiles
- * @param {number} gridSize - Size of the grid
- */
-export const calculateDanger = (board, gridSize) => {
-  for (let i = 0; i < gridSize; i++) {
-    for (let j = 0; j < gridSize; j++) {
-      if (board[i][j].type !== TILE_TYPES.EMPTY) continue;
+export const revealTile = (gameSession, row, col) => {
+  const { board } = gameSession;
+  if (!inBounds(board, row, col)) {
+    const error = new Error("Invalid coordinates");
+    error.status = 400;
+    throw error;
+  }
 
-      let danger = 0;
-      // Check all 8 adjacent tiles
-      for (let di = -1; di <= 1; di++) {
-        for (let dj = -1; dj <= 1; dj++) {
-          if (di === 0 && dj === 0) continue;
+  const current = board[row][col];
+  const canReuseVisibleTile =
+    current.type === "boss" ||
+    current.type === "enemy" ||
+    current.type === "trap" ||
+    current.type === "support" ||
+    current.type === "mystery" ||
+    (current.name === "blue orb" && !current.extra?.used);
+  if (current.revealed && !canReuseVisibleTile) {
+    const error = new Error("Tile already revealed.");
+    error.status = 400;
+    throw error;
+  }
 
-          const ni = i + di;
-          const nj = j + dj;
+  current.revealed = true;
+  const result = {
+    action: "revealed",
+    revealedCells: [[row, col]],
+    damage: 0,
+    xpGain: 0,
+  };
 
-          if (ni >= 0 && ni < gridSize && nj >= 0 && nj < gridSize) {
-            const neighbor = board[ni][nj];
-            if (
-              neighbor.type === TILE_TYPES.ENEMY ||
-              neighbor.type === TILE_TYPES.TRAP
-            ) {
-              danger += neighbor.value;
-            }
+  if (current.type === "boss") {
+    applyDamage(gameSession, current.value);
+    addXp(gameSession, current.value);
+    result.action = "slay_dragon";
+    result.damage = current.value;
+    result.xpGain = current.value;
+    clearToEmpty(board, row, col, true);
+  } else if (current.type === "enemy") {
+    const damage = Math.max(0, current.value);
+    const xp = Math.max(0, current.value);
+    applyDamage(gameSession, damage);
+    addXp(gameSession, xp);
+    result.action = `enemy_${current.name}`;
+    result.damage = damage;
+    result.xpGain = xp;
+
+    if (current.name === "bombslime") {
+      const blast = revealBombslimeBlast(board, row, col);
+      result.revealedCells.push(...blast);
+      result.action = "bombslime_blast";
+    }
+    if (current.name === "rat master") {
+      for (let i = 0; i < board.length; i += 1) {
+        for (let j = 0; j < board[i].length; j += 1) {
+          if (!board[i][j].revealed && board[i][j].name === "rat") {
+            board[i][j].revealed = true;
+            result.revealedCells.push([i, j]);
           }
         }
       }
-      board[i][j].danger = danger;
+      result.action = "rat_master";
     }
-  }
-};
-
-/**
- * Reveals a tile and handles game logic
- * @param {Object} gameSession - The game session object
- * @param {number} x - X coordinate
- * @param {number} y - Y coordinate
- * @returns {Object} Result of the reveal action
- */
-export const revealTile = (gameSession, x, y) => {
-  const { board, gridSize, playerStats } = gameSession;
-
-  if (x < 0 || x >= gridSize || y < 0 || y >= gridSize) {
-    throw new Error("Invalid coordinates");
-  }
-
-  const tile = board[x][y];
-
-  if (tile.revealed) {
-    return { action: "already_revealed" };
-  }
-
-  tile.revealed = true;
-  const revealedCells = [[x, y]];
-
-  let action = "revealed";
-  let damage = 0;
-  let xpGain = 0;
-
-  switch (tile.type) {
-    case TILE_TYPES.EMPTY:
-      if (tile.danger === 0) {
-        // Flood fill for safe empty tiles
-        const floodRevealed = floodFill(board, x, y, gridSize);
-        revealedCells.push(...floodRevealed);
-        action = "flood_fill";
-      }
-      break;
-
-    case TILE_TYPES.ENEMY:
-      damage = tile.value;
-      playerStats.hp -= damage;
-      action = "enemy_encounter";
-      break;
-
-    case TILE_TYPES.TRAP:
-      damage = tile.value;
-      playerStats.hp -= damage;
-      action = "trap_triggered";
-      break;
-
-    case TILE_TYPES.TREASURE:
-      xpGain = tile.value;
-      playerStats.xp += xpGain;
-      playerStats.level = Math.floor(playerStats.xp / 100) + 1;
-      action = "treasure_found";
-      break;
-  }
-
-  return {
-    action,
-    revealedCells,
-    damage,
-    xpGain,
-    playerStats,
-  };
-};
-
-/**
- * Performs flood fill to reveal connected empty tiles with danger = 0
- * @param {Array} board - 2D array of tiles
- * @param {number} startX - Starting X coordinate
- * @param {number} startY - Starting Y coordinate
- * @param {number} gridSize - Size of the grid
- * @returns {Array} Array of [x,y] coordinates that were revealed
- */
-const floodFill = (board, startX, startY, gridSize) => {
-  const revealed = [];
-  const queue = [[startX, startY]];
-  const visited = new Set();
-
-  while (queue.length > 0) {
-    const [x, y] = queue.shift();
-    const key = `${x},${y}`;
-
-    if (visited.has(key)) continue;
-    visited.add(key);
-
-    const tile = board[x][y];
-
-    if (tile.revealed || tile.type !== TILE_TYPES.EMPTY || tile.danger !== 0)
-      continue;
-
-    tile.revealed = true;
-    revealed.push([x, y]);
-
-    // Add adjacent tiles to queue
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        if (dx === 0 && dy === 0) continue;
-
-        const nx = x + dx;
-        const ny = y + dy;
-
-        if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize) {
-          queue.push([nx, ny]);
-        }
-      }
+    clearToEmpty(board, row, col, true);
+  } else if (current.name === "blue orb") {
+    current.extra = { ...(current.extra || {}), used: true };
+    const revealed = revealNearby(board, row, col, 12);
+    revealed.forEach(([x, y]) => {
+      board[x][y].revealed = true;
+      result.revealedCells.push([x, y]);
+    });
+    result.action = "blue_orb";
+  } else if (current.name === "trapchest") {
+    const isBomb = Math.random() < 0.1;
+    const damage = isBomb ? 100 : 1;
+    applyDamage(gameSession, damage);
+    result.action = isBomb ? "trapchest_bomb" : "trapchest";
+    result.damage = damage;
+    clearToEmpty(board, row, col, true);
+  } else if (current.name === "bomb") {
+    applyDamage(gameSession, 100);
+    result.action = "bomb_exploded";
+    result.damage = 100;
+    clearToEmpty(board, row, col, true);
+  } else if (current.name === "chest") {
+    const fullHeal = Math.random() < 0.65;
+    if (fullHeal) {
+      gameSession.playerStats.hp = gameSession.playerStats.maxHp;
+      result.action = "chest_full_heal";
+    } else {
+      const xp = 4 + Math.floor(Math.random() * 5);
+      addXp(gameSession, xp);
+      result.action = "chest_xp";
+      result.xpGain = xp;
     }
+    clearToEmpty(board, row, col, true);
+  } else if (current.name === "question") {
+    result.action = "question";
+    clearToEmpty(board, row, col, true);
   }
 
-  return revealed;
+  recalcDanger(board);
+  return result;
 };
 
-/**
- * Checks the current game status
- * @param {Object} gameSession - The game session object
- * @returns {string} "ongoing", "won", or "lost"
- */
+export const levelUpPlayer = (gameSession) => {
+  const cost = Math.max(1, gameSession.playerStats.hp);
+  if (gameSession.playerStats.xp < cost) {
+    const error = new Error("Not enough XP to level up.");
+    error.status = 400;
+    throw error;
+  }
+  gameSession.playerStats.xp -= cost;
+  gameSession.playerStats.level += 1;
+  gameSession.playerStats.maxHp += 1;
+  gameSession.playerStats.hp = gameSession.playerStats.maxHp;
+};
+
 export const checkGameStatus = (gameSession) => {
-  const { board, gridSize, playerStats } = gameSession;
-
-  // Check if player is dead
-  if (playerStats.hp <= 0) {
-    return "lost";
-  }
-
-  // Check if all treasures are revealed
-  let allTreasuresRevealed = true;
-  for (let i = 0; i < gridSize; i++) {
-    for (let j = 0; j < gridSize; j++) {
-      const tile = board[i][j];
-      if (tile.type === TILE_TYPES.TREASURE && !tile.revealed) {
-        allTreasuresRevealed = false;
-        break;
-      }
-    }
-    if (!allTreasuresRevealed) break;
-  }
-
-  if (allTreasuresRevealed) {
-    return "won";
-  }
-
+  if (gameSession.playerStats.hp <= 0) return "lost";
+  const center = Math.floor(gameSession.board.length / 2);
+  const centerTile = gameSession.board[center][center];
+  if (centerTile.type === "empty" && centerTile.revealed) return "won";
   return "ongoing";
 };
 
-// Helper functions
-
-const getDifficultyDistribution = (difficulty, playerLevel) => {
-  const baseMultiplier = Math.min(playerLevel * 0.1 + 1, 2); // Max 2x at level 10+
-
-  let enemyRatio, trapRatio, treasureRatio;
-
-  switch (difficulty) {
-    case "easy":
-      enemyRatio = 0.15;
-      trapRatio = 0.05;
-      treasureRatio = 0.15;
-      break;
-    case "hard":
-      enemyRatio = 0.25;
-      trapRatio = 0.15;
-      treasureRatio = 0.08;
-      break;
-    default: // medium
-      enemyRatio = 0.2;
-      trapRatio = 0.1;
-      treasureRatio = 0.1;
-  }
-
-  return {
-    enemyCount: Math.floor(100 * enemyRatio * baseMultiplier),
-    trapCount: Math.floor(100 * trapRatio * baseMultiplier),
-    treasureCount: Math.floor(100 * treasureRatio),
-  };
-};
-
-const placeEnemies = (board, count, gridSize, playerLevel, rng) => {
-  const enemyPool = getEnemyPool(playerLevel);
-  let placed = 0;
-
-  while (placed < count) {
-    const x = Math.floor(rng() * gridSize);
-    const y = Math.floor(rng() * gridSize);
-
-    if (board[x][y].type !== TILE_TYPES.EMPTY || (x === 0 && y === 0)) continue;
-
-    const enemy = enemyPool[Math.floor(rng() * enemyPool.length)];
-    board[x][y] = {
-      ...board[x][y],
-      type: TILE_TYPES.ENEMY,
-      value: enemy.value,
-      enemyType: enemy.name,
-    };
-    placed++;
-  }
-};
-
-const placeTraps = (board, count, gridSize, playerLevel, rng) => {
-  let placed = 0;
-
-  while (placed < count) {
-    const x = Math.floor(rng() * gridSize);
-    const y = Math.floor(rng() * gridSize);
-
-    if (board[x][y].type !== TILE_TYPES.EMPTY || (x === 0 && y === 0)) continue;
-
-    board[x][y] = {
-      ...board[x][y],
-      type: TILE_TYPES.TRAP,
-      value: TRAP_TYPES.BOMB.value,
-      trapType: TRAP_TYPES.BOMB.name,
-    };
-    placed++;
-  }
-};
-
-const placeTreasures = (board, count, gridSize, rng) => {
-  const treasurePool = [
-    TREASURE_TYPES.GOLD,
-    TREASURE_TYPES.GEM,
-    TREASURE_TYPES.ARTIFACT,
-  ];
-  let placed = 0;
-
-  while (placed < count) {
-    const x = Math.floor(rng() * gridSize);
-    const y = Math.floor(rng() * gridSize);
-
-    if (board[x][y].type !== TILE_TYPES.EMPTY || (x === 0 && y === 0)) continue;
-
-    const treasure = treasurePool[Math.floor(rng() * treasurePool.length)];
-    board[x][y] = {
-      ...board[x][y],
-      type: TILE_TYPES.TREASURE,
-      value: treasure.value,
-      treasureType: treasure.name,
-    };
-    placed++;
-  }
-};
-
-const getEnemyPool = (playerLevel) => {
-  const pool = [];
-
-  if (playerLevel >= 1) pool.push(ENEMY_TYPES.RAT, ENEMY_TYPES.BAT);
-  if (playerLevel >= 3) pool.push(ENEMY_TYPES.SKELETON);
-  if (playerLevel >= 5) pool.push(ENEMY_TYPES.PLANT, ENEMY_TYPES.SLIME);
-  if (playerLevel >= 8) pool.push(ENEMY_TYPES.BOSS);
-
-  return pool;
-};
-
-// Seeded random number generator for deterministic board generation
-const seededRandom = (seed) => {
-  let x = Math.sin(seed) * 10000;
-  return () => {
-    x = Math.sin(x) * 10000;
-    return x - Math.floor(x);
-  };
-};
+export const isWinPossible = () => true;
+export const normalizeGridSize = () => GRID_SIZE;

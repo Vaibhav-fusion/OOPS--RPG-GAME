@@ -1,5 +1,15 @@
+import logger from "../config/logger.js";
+
 export const errorHandler = (err, req, res, next) => {
-  console.error(err);
+  logger.error(
+    "Error processing request %s %s: %s",
+    req.method,
+    req.originalUrl,
+    err.message,
+    {
+      stack: err.stack,
+    },
+  );
 
   if (err.name === "ValidationError") {
     return res

@@ -12,6 +12,16 @@ const gameSessionSchema = new mongoose.Schema(
       required: true,
       default: 10,
     },
+    difficulty: {
+      type: String,
+      enum: ["easy", "medium", "hard"],
+      required: true,
+      default: "medium",
+    },
+    expiresAt: {
+      type: Date,
+      required: true,
+    },
     board: {
       type: [[Object]], // 2D array of tile objects
       required: true,
@@ -23,7 +33,11 @@ const gameSessionSchema = new mongoose.Schema(
     playerStats: {
       hp: {
         type: Number,
-        default: 100,
+        default: 5,
+      },
+      maxHp: {
+        type: Number,
+        default: 5,
       },
       xp: {
         type: Number,
@@ -36,14 +50,36 @@ const gameSessionSchema = new mongoose.Schema(
     },
     gameStatus: {
       type: String,
-      enum: ["ongoing", "won", "lost"],
+      enum: ["ongoing", "won", "lost", "abandoned"],
       default: "ongoing",
+    },
+    startedAt: {
+      type: Date,
+      default: () => new Date(),
+    },
+    completedAt: {
+      type: Date,
+      default: null,
+    },
+    lastActionAt: {
+      type: Date,
+      default: null,
+    },
+    moveCount: {
+      type: Number,
+      default: 0,
+    },
+    suspiciousActions: {
+      type: Number,
+      default: 0,
     },
   },
   {
     timestamps: true,
   },
 );
+
+gameSessionSchema.index({ userId: 1, gameStatus: 1 });
 
 const GameSession =
   mongoose.models.GameSession ||
