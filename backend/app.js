@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import mongoose from "mongoose";
+import cors from "cors";
 import authRoutes from "./src/modules/auth/auth.routes.js";
 import gameRoutes from "./src/routes/game.routes.js";
 import leaderboardRoutes from "./src/leaderboard/leaderboard.routes.js";
@@ -12,18 +13,22 @@ import { errorHandler } from "./src/middleware/error.middleware.js";
 const app = express();
 app.use(express.json());
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "http://localhost:5175");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization",
-  );
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-  next();
-});
+// Configure CORS
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || "http://localhost:5175",
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization",
+  ],
+};
+
+app.use(cors(corsOptions));
 
 app.use((req, res, next) => {
   logger.info("%s %s", req.method, req.originalUrl);
